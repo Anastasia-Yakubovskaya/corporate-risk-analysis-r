@@ -1,0 +1,412 @@
+---
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{polyglossia}
+  - \setmainlanguage{russian}
+  - \setotherlanguage{english}
+  - \newfontfamily\russianfont[Script=Cyrillic]{Times New Roman}
+  - \newfontfamily\russianfonttt[Script=Cyrillic]{Courier New}
+  - \usepackage{geometry}
+  - \geometry{verbose,tmargin=2cm,bmargin=2cm,lmargin=3cm,rmargin=1.5cm}
+  - \usepackage{indentfirst}
+  - \setlength{\parindent}{1.25cm}
+  - \linespread{1.25}
+  - \usepackage{titlesec}
+  - \newcommand{\sectionbreak}{\clearpage}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 4.5)
+library(tidyverse)
+library(knitr)
+library(gridExtra)
+library(corrplot)
+
+df <- read.csv("C:/Users/jakub/Downloads/Тинькофф Юр Лица/tinkoff_legal_entities_new.csv", encoding = "UTF-8")
+```
+
+# Введение
+
+Оценка репутационного и кредитного риска юридических лиц — фундаментальный элемент управления финансовой устойчивостью банков. При работе с малым и средним бизнесом традиционные финансовые показатели часто оказываются недоступны из-за отсутствия публичной отчетности или короткой операционной истории компании. В этих условиях ключевое значение приобретают альтернативные данные (Alternative Data) — сведения из контактных справочников, отзывы на публичных платформах, судебная практика и паттерны подачи кредитных заявок.
+
+Настоящее исследование посвящено анализу взаимосвязей между альтернативными признаками юридических лиц и разработке прозрачной модели оценки риска. На основе выборки из 15 000 компаний решаются задачи первичного анализа данных (EDA), проверки гипотез о влиянии публичной и финансовой активности на уровень риска, а также построения правило-ориентированной (Rule-Based) системы скоринга. Подобный экспертный подход обеспечивает высокую интерпретируемость результатов, необходимую для первичного андеррайтинга.
+
+Цель работы: исследование взаимосвязей между альтернативными признаками юридических лиц и разработка интерпретируемой модели оценки их риска.
+
+Задачи работы:
+- Провести первичный разведочный анализ данных (EDA) и интерпретировать структуру пропусков.
+- Оценить информативность целевой переменной и ключевых групп признаков.
+- Проверить гипотезы о взаимосвязи негативных меток, публичной и финансовой активности компаний.
+- Построить корреляционную матрицу показателей.
+- Разработать правило-ориентированную (Rule-Based) скоринговую модель для сегментации компаний по зонам риска.
+
+Объектом исследования выступает выборка из 15 000 юридических лиц, содержащая 35 признаков различного типа.
+
+
+
+# Глава 1. Описание данных и первичный разведочный анализ
+
+## Общее описание данных
+15000 юридических лиц, со следующими характеристиками:
+- id компании, дата скоринга компании
+- данные телефонных книг
+- кридитные заявки и претензии
+- судебная практика и запросы МВД
+- внешние рейтинги
+
+## Проведем первичный анализ данных
+Вначале узнаем общий объем информации, количество признаков и типы всех переменныъ
+``` {r eda-dim, message = FALSE, warning=FALSE}
+cat(dim(df)[1], dim(df)[2]) # 15000 запросов и 35 колонок
+
+str(df)  # видим пропуски в полях bad_rep_tcb, claims_percent, их требуется обработать
+```
+Обработаем пропуски, которые есть в данных
+Выясним в каких данных есть пропуски и унаем их процент, построим график
+```{r eda-missing, fig.width=9, fig.height=5, message=FALSE, warning=FALSE}
+missing_info <- df %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "na_count") %>%
+  mutate(na_perc = round((na_count / nrow(df)) * 100, 2)) %>%
+  filter(na_count > 0) %>%
+  arrange(desc(na_perc))
+# Построим таблицу пропусков
+knitr::kable(missing_info, col.names = c("Переменная", "Кол-во", "Процент"),
+             caption = "Таблица переменных с пропущенными значениями")
+```
+Пропуски находятся на мой взгляд в достаточно логичных местах и их можно интерпретировать: основная часть пропусков находится в судебных делах и жалобах, что может означать, что у команды просто не было жалоб и они не участвовали в судебных делах.
+Пропуск во внешних рейтингах означает, что у компании просто нет карточки на сайте компании
+
+## Далее посмотрим на распределение целевой переменной (флаг репутации)
+```{r eda-target, fig.width=7, fig.height=4, message=FALSE, warning=FALSE}
+target_summary <- df %>%
+  group_by(bad_rep_tcb) %>%
+  summarise(
+    Count = n(),
+    Percentage = round(n() / nrow(df) * 100, 2)
+  )
+
+knitr::kable(target_summary, col.names = c("bad_rep_tcb", "Количество", "Доля"),
+             caption = "Распределение компаний по флагу репутации")
+
+ggplot(df, aes(x = factor(bad_rep_tcb, labels = c("Хорошая репутация", "Плохая репутация")), 
+               fill = factor(bad_rep_tcb))) +
+  geom_bar(alpha = 0.85, show.legend = FALSE) +
+  scale_fill_manual(values = c("0" = "#2c7fb8", "1" = "#de2d26")) +
+  geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5, fontface = "bold") +
+  labs(
+    title = "Соотношение компаний с хорошей и плохой репутацией",
+    x = "Категория",
+    y = "Количество"
+  ) +
+  theme_minimal()
+```
+Можно увидеть достаточно сильный дисбаланс флаг есть только у 24 команий, а подтвержденная хорошая репутация стоит у 103 компаний, в то время как у остальных 14873 компаний стоит пропуск. Это означает, что в исследовании по больше части следует опираться на другие данные
+
+## Логарифмирование показателей
+
+Чтобы сгладить сильную ассимтерию и для корректного анализа логарифмируем показатели 
+```{r eda-transforms, fig.width=9, fig.height=4, message=FALSE, warning=FALSE}
+library(gridExtra)
+
+df <- df %>%
+  mutate(
+    log_phb_all = log1p(phb_all),
+    log_phb_all_bad = log1p(phb_all_bad),
+    log_phb_all_bad_dir = log1p(phb_all_bad_dir),
+    log_defendant_amt = log1p(ifelse(is.na(total_defendant_case_amt), 0, total_defendant_case_amt))
+  )
+
+p1 <- ggplot(df, aes(x = phb_all_bad)) +
+  geom_histogram(bins = 30, fill = "#e6550d", alpha = 0.7) +
+  labs(title = "Негативные записи в ТК", x = "phb_all_bad", y = "Количество") +
+  theme_minimal()
+
+p2 <- ggplot(df, aes(x = log_phb_all_bad)) +
+  geom_histogram(bins = 30, fill = "#31a354", alpha = 0.7) +
+  labs(title = "Негативные записи в ТК (log1p)", x = "log(1 + phb_all_bad)", y = "Количество") +
+  theme_minimal()
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+Начнем формулировку вопросов, поскольку целевая переменная не сильно информативная, проверим блок данных, где почти нет пропусков - телефонные книги
+
+# Глава 2. Анализ ключевых вопросов исследования
+
+## Вопрос 1: Связано ли общее количество записей компании в телефонных книгах с долей плохих оценок? Проявляется ли связь сильнее у руковолителей?
+
+Для построения графиков разделим компании на 4 группы: малые, средние, крупные и очень крупные, для каждой группы будем считать процент компаний у которых есть хотябы одна негативная запись.
+```{r question-1-v2, fig.width=9, fig.height=4.5, message=FALSE, warning=FALSE}
+df_q1 <- df %>%
+  filter(!is.na(phb_bad_perc_dir)) %>%
+  mutate(
+    company_size = case_when(
+      phb_all <= 100 ~ "1. Малый",
+      phb_all <= 1000 ~ "2. Средний",
+      phb_all <= 5000 ~ "3. Крупный ",
+      TRUE ~ "4. Очень крупный"
+    )
+  )
+
+ggplot(df_q1, aes(x = company_size, y = phb_bad_perc_dir, fill = company_size)) +
+  geom_boxplot(outlier.alpha = 0.1, alpha = 0.7) +
+  coord_cartesian(ylim = c(0, 5)) + 
+  scale_fill_brewer(palette = "Blues") +
+  labs(
+    title = "Доля негатива в контактах руководства по размерам компаний",
+    x = "Категория размера компании",
+    y = "Доля негативных записей",
+    fill = "Размер"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+
+df_q1_share <- df_q1 %>%
+  group_by(company_size) %>%
+  summarise(
+    total_companies = n(),
+    bad_companies = sum(phb_all_bad_dir > 0, na.rm = TRUE),
+    share_bad_percent = round((bad_companies / total_companies) * 100, 2)
+  )
+
+ggplot(df_q1_share, aes(x = company_size, y = share_bad_percent, fill = company_size)) +
+  geom_col(alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = paste0(share_bad_percent, "%")), vjust = -0.5, fontface = "bold") +
+  scale_fill_brewer(palette = "Oranges") +
+  labs(
+    title = "Процент компаний с негативными отметками",
+    x = "Категория",
+    y = "Доля компаний"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+Вывод: основные выводы, которые можно сделать это то, что у крупных компаний негатив находится чаще (почти у каждой 4 компании есть хотя бы одна метка у руководства), в то время как у малого бизнеса это реже
+Мне кажется, что можно сделать вывод, что если у крупной компинии есть негативный отзыв это не показатель мошеничества, однако если у маленькой компании больше процент негативных отзывов, это сигнал  риска.
+
+## Вопрос  2: Связана ли высокая  доля претензий по кредитам с общеей долей негатив в ТК?
+Разобьем как и в прошлой гипотезе на четыре группы: по количеству претензий по кредитам - нет претензий, низкий риск, средний риск и высокий риск и вычистываем в каждой категории долю компаний где есть хотя бы одна негативная запись.
+
+```{r question-2-v4, fig.width=9, fig.height=4.5, message=FALSE, warning=FALSE}
+df_q2 <- df %>%
+  filter(!is.na(claims_percent), !is.na(phb_bad_perc)) %>%
+  mutate(
+    claim_group = case_when(
+      claims_percent == 0 ~ "Нет претензий",
+      claims_percent <= 10 ~ "Низкий риск ",
+      claims_percent <= 30 ~ "Средний риск",
+      TRUE ~ "Высокий риск"
+    )
+  ) %>%
+  group_by(claim_group) %>%
+  summarise(
+    total_companies = n(),
+    mean_bad_perc = round(mean(phb_bad_perc, na.rm = TRUE), 3),
+    share_has_bad = round(sum(phb_all_bad > 0, na.rm = TRUE) / n() * 100, 2)
+  )
+
+ggplot(df_q2, aes(x = claim_group, y = share_has_bad, fill = claim_group)) +
+  geom_col(alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = paste0(share_has_bad, "%")), vjust = -0.5, fontface = "bold") +
+  scale_fill_brewer(palette = "YlOrRd") +
+  labs(
+    title = "Связь претензий по кредитам и наличия негатива в телефонных книгах",
+    x = "Категория доли претензий по кредитам",
+    y = "Процент компаний с негативом в ТК"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+Вывод: прямой связи между этими признаками не наблюдается, они содеражат разную информацию и их можно использовать как независимые признаки
+
+## Вопрос 3: Правда ли что компании с юольшим количеством отзывов на платформах обладают меньшей долей негатива в телефонных книгах?
+Складываем отзывы со всех платформ, получаем общие уровень у каждой компании, группируем и высчитываем риск по негативным отметкам.
+
+```{r question-3, fig.width=9, fig.height=4.5, message=FALSE, warning=FALSE}
+df_q3 <- df %>%
+  mutate(
+    total_reviews = coalesce(reviews_cnt_ya, 0) + 
+                    coalesce(reviews_cnt_2gis, 0) + 
+                    coalesce(reviews_cnt_avito, 0) + 
+                    coalesce(reviews_cnt_yell, 0),
+    
+    activity_group = case_when(
+      total_reviews == 0 ~ "Нет отзывов",
+      total_reviews <= 10 ~ "Низкая",
+      total_reviews <= 100 ~ "Средняя",
+      TRUE ~ "Высокая"
+    )
+  ) %>%
+  group_by(activity_group) %>%
+  summarise(
+    total_companies = n(),
+    mean_phb_bad = round(mean(phb_bad_perc, na.rm = TRUE), 3),
+    share_bad_companies = round(sum(phb_all_bad > 0, na.rm = TRUE) / n() * 100, 2)
+  )
+
+ggplot(df_q3, aes(x = activity_group, y = share_bad_companies, fill = activity_group)) +
+  geom_col(alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = paste0(share_bad_companies, "%")), vjust = -0.5, fontface = "bold") +
+  scale_fill_brewer(palette = "Blues") +
+  labs(
+    title = "Процент компаний с негативом в ТК в зависимости от публичной активности",
+    x = "Категория публичной активности",
+    y = "Процент компаний с негативом в ТК"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+Вывод: на графике четко видно прямую зависимость: чем выше активность у компании, тем чаще встречается негатив, поэтому можно сделать вывод, что наличие негативных записей у публчного бизнеса с большим количеством отзывов это нормально, однако если компание принадлежит первой группе и имеет высокий процент негатив это зона риска.
+
+## Корреляционный анализ признаков
+
+Для выявления сиильных взаимосвязей построим корреляционную матрицу.
+```{r correlation-matrix, fig.width=9, fig.height=7, message=FALSE, warning=FALSE}
+library(corrplot)
+
+corr_data <- df %>%
+  select(
+    log_phb_all, log_phb_all_bad, phb_bad_perc,
+    phb_bad_perc_dir, claims_percent, claims_num,
+    appl_num, ratings_cnt_ya, reviews_cnt_2gis
+  ) %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), 0, .)))
+
+
+cor_matrix <- cor(corr_data, method = "spearman")
+
+corrplot(cor_matrix, 
+         method = "color", 
+         type = "upper", 
+         tl.col = "black", 
+         tl.srt = 45,
+         addCoef.col = "black",
+         number.cex = 0.75,
+         diag = FALSE,
+         title = "Матрица корреляций",
+         mar = c(0,0,2,0))
+```
+Вывод: построя граффик корреляции можно сделать следующие выводы: существует прямая связь между претензиями по кредитам и их количеством; негативная информация в ТК почти полностью дублирует негатив  в целом; негативные отзывы на руководителей почти не коррелируют с показателими компаний.
+
+## Вопрос 4: Как изменяется количество негативных  отзывов в зависимости от активности?
+
+Посколькку в моих данных нет информации про дату и время, будем анализировать количетсво актиынвх отзывов относительно пользовательской активности.
+Разделим предприятия на 4 типа финансовой активности  и для  каждой рассчитаем долю организаций, имеющая негативный опыт в ТК
+
+```{r question-time-dynamics-v2, fig.width=9, fig.height=4.5, message=FALSE, warning=FALSE}
+
+df_time <- df %>%
+  filter(!is.na(appl_num)) %>%
+  mutate(
+    activity_stage = case_when(
+      appl_num == 1 ~ "1 заявка",
+      appl_num <= 3 ~ "2-3",
+      appl_num <= 10 ~ "4-10",
+      TRUE ~ ">10"
+    ),
+    activity_stage = factor(activity_stage, levels = c(
+      "1 заявка", 
+      "2-3", 
+      "4-10", 
+      ">10"
+    ))
+  ) %>%
+  group_by(activity_stage) %>%
+  summarise(
+    total_companies = n(),
+    share_has_bad = round(sum(phb_all_bad > 0, na.rm = TRUE) / n() * 100, 2)
+  )
+
+ggplot(df_time, aes(x = activity_stage, y = share_has_bad, fill = activity_stage)) +
+  geom_col(alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = paste0(share_has_bad, "%")), vjust = -0.5, fontface = "bold") +
+  scale_fill_brewer(palette = "Blues") +
+  labs(
+    title = "Динамика накопительного риска по этапам финансовой активности",
+    x = "Этап кредитной активности",
+    y = "Процент компаний с негативом в ТК"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+Вывод:На первых этапах работы компании доля негатива находится на стабильном уровне, у компаний с активным поиском кредитов доля с негативом резко возрастает,чатсая подача заявок на кредиты, сигнализирует о трудностях, что напрямую отражается на росте негативных отметок.
+
+# Глава 3. Построение скоринговой модели риска
+
+## Вопрос 5: Попытка предсказать негативный рейтинг
+Для выполнения этой части работы вопспользуемся методом Scoring Rule-Based: на основе полуученных закономерностей зададим систему штрафных балов   для распределения  компаний по группам. Возьмем 4 основных проанализированных показателя: негатив по компании, негатив по руководству, претензии по кредитам и аномальную кредитную активность для каждой категории выделим штрафные баллы по которым будем оценивать риск той или иной компании.Тогда каждая компания получает число от 0 до 100 и в зависимости от этого числа будет попадать в одну из трех групп риска:низкую, среднюю и высокую.
+
+```{r risk-scoring-index, fig.width=9, fig.height=4.5, message=FALSE, warning=FALSE}
+df_scored <- df %>%
+  mutate(
+    phb_bad_p = ifelse(is.na(phb_bad_perc), 0, phb_bad_perc),
+    phb_dir_p = ifelse(is.na(phb_bad_perc_dir), 0, phb_bad_perc_dir),
+    claims_p  = ifelse(is.na(claims_percent), 0, claims_percent),
+    appl_n    = ifelse(is.na(appl_num), 0, appl_num),
+    
+    score_phb = case_when(
+      phb_bad_p > 0.05 ~ 35,
+      phb_bad_p > 0 ~ 15,
+      TRUE ~ 0
+    ),
+    score_dir = case_when(
+      phb_dir_p > 0.05 ~ 25,
+      phb_dir_p > 0 ~ 10,
+      TRUE ~ 0
+    ),
+    score_claims = case_when(
+      claims_p > 30 ~ 25,
+      claims_p > 0 ~ 10,
+      TRUE ~ 0
+    ),
+    score_appl = case_when(
+      appl_n > 10 ~ 15,
+      appl_n > 5 ~ 5,
+      TRUE ~ 0
+    ),
+    
+    risk_index = score_phb + score_dir + score_claims + score_appl,
+    
+    risk_category = case_when(
+      risk_index == 0 ~ "Низкий",
+      risk_index <= 30 ~ "Умеренный",
+      TRUE ~ "Высокий"
+    )
+  )
+
+ggplot(df_scored, aes(x = risk_category, fill = risk_category)) +
+  geom_bar(alpha = 0.85, width = 0.5) +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5, fontface = "bold") +
+  scale_fill_manual(values = c("#2b8cbe", "#e6550d", "#de2d26")) +
+  labs(
+    title = "Распределение компаний по  Индексу",
+    x = "Категория ",
+    y = "Количество",
+    fill = "Зона"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+Вывод: подавляющее большинство компаний попали в зону с низким уровнем риска, однако 2352 компании все таки представляют угрозу.
+
+# Заключение
+
+Проведенный анализ 15 000 юридических лиц подтвердил высокую ценность альтернативных данных при дефиците официальной отчетности. В ходе работы установлено, что прямая корреляция между негативными метками в контактных книгах и задолженностью по кредитам отсутствует, что позволяет использовать эти показатели как независимые индикаторы риска. Кроме того, выявлена закономерность: резкий рост числа подаваемых кредитных заявок отражает накопление финансового стресса компании и сопровождается ростом доли негативных отзывов.
+
+На основе выявленных факторов была разработана правило-ориентированная скоринговая модель (Risk Index от 0 до 100 баллов). Модель успешно сегментировала выборку, выделив 2 352 компании группы повышенного риска, требующие дополнительной проверки. Полученные результаты подтверждают практическую применимость предложенного метода для автоматизации первичного скрининга контрагентов и снижения неопределенности при кредитовании.
+
+# Список литературы
+
+1. FinDev Gateway. Alternative Data: Transforming SME Finance. — Research Paper, 2017. — Режим доступа: https://www.findevgateway.org/paper/2017/05/alternative-data-transforming-sme-finance
+
+2. FICO. How to Use Alternative Data in Credit Risk Analytics. — FICO Blog, Jan. 2026. — Режим доступа: https://www.fico.com/blogs/how-use-alternative-data-credit-risk-analytics
+
+3. RebuildingSociety. AI-Driven Alternative Data: Revolutionizing Credit Scoring for SME. — Industry Insight, Apr. 2026. — Режим доступа: https://www.rebuildingsociety.com/ai-driven-alternative-data-revolutionizing-credit-scoring-for-sme-peer-lending/
